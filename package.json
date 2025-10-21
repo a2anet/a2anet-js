@@ -1,0 +1,60 @@
+{
+  "name": "a2anet",
+  "version": "1.0.0",
+  "description": "A JavaScript package that makes implementing the A2A protocol easy",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "a2anet",
+    "a2a",
+    "protocol",
+    "agent",
+    "network"
+  ],
+  "author": "A2A Net <hello@a2anet.com>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/a2anet/a2anet-js"
+  },
+  "homepage": "https://github.com/a2anet/a2anet-js#readme",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "^0.3.4",
+    "@openai/agents": "^0.1.10",
+    "@stackone/openai-agents-js-sessions": "^0.2.1",
+    "uuid": "^13.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.38.0",
+    "@types/eslint__js": "^8.42.3",
+    "@types/node": "^24.9.1",
+    "eslint": "^9.38.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2"
+  }
+}
