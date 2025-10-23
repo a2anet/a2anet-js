@@ -1,18 +1,53 @@
-# A2ANet JavaScript SDK
+# A2A Net JavaScript SDK
 
-A JavaScript/TypeScript package that bridges the [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) with the [A2A (Agent-to-Agent) protocol](https://www.a2a.app/), making it easy to build interoperable AI agents.
+A JavaScript/TypeScript package with a pre-built [Agent2Agent (A2A) Protocol](https://a2a-protocol.org/latest/) Agent Executor for the [OpenAI Agents JS SDK](https://openai.github.io/openai-agents-js/).
 
-## Overview
+The package should allow you to create an A2A agent with the OpenAI SDK in 5 minutes, and is fully customisable.
+By default, the Agent Executor converts OpenAI SDK messages and tool calls into A2A compatible messages.
+The Agent Executor also accepts a "Task Agent" that reviews the conversation history, determines the [`TaskState`](https://a2a-protocol.org/latest/specification/#63-taskstate-enum) (e.g. `input-required`, `completed`, `failed`, etc.), and extracts `Artifact`s.
+Because the OpenAI SDK doesn't support sessions out-of-the-box, the library uses [@stackone/openai-agents-js-sessions](https://www.npmjs.com/package/@stackone/openai-agents-js-sessions) which is based on [OpenAI Agents Python SDK Sessions](https://openai.github.io/openai-agents-python/sessions/).
 
-The A2A protocol enables agents to communicate with each other in a standardized way. This SDK provides an `AgentExecutor` implementation that allows you to use the powerful OpenAI Agents SDK within the A2A framework, giving you:
+Test your agent with the [Agent2Agent (A2A) UI](https://github.com/a2anet/a2a-ui), and add your deployed agent to [A2A Net](https://a2anet.com/).
 
-- ✨ **OpenAI Agents SDK Integration** - Use agents, tools, handoffs, and guardrails from the OpenAI Agents SDK
-- 🔄 **Conversation History** - Persistent sessions using [`@stackone/openai-agents-js-sessions`](https://github.com/StackOneHQ/openai-agents-js-sessions) (based on the [OpenAI Agents Python SDK Sessions](https://openai.github.io/openai-agents-python/sessions/))
-- 📡 **Streaming Support** - Real-time event streaming for agent responses, tool calls, and task updates
-- 🎯 **Task State Management** - Automatic task state detection and artifact extraction
-- 🛠️ **Tool Integration** - Full support for OpenAI Agents SDK tools and function calling
+## 📋 Overview
 
-## Installation
+### A2A Support
+
+- [x] Agent Executor
+  - [x] `execute()` method
+  - [ ] `cancelTask()` method
+- [x] Task State type
+- [x] Artifact type
+  - [x] `TextPart` Artifact
+  - [x] `DataPart` Artifact
+  - [ ] `FilePart` Artifact
+- [x] Streaming
+- [ ] Push notifications
+
+### Frameworks
+
+- [x] [OpenAI Agents JS SDK](https://openai.github.io/openai-agents-js/)
+- [ ] [AI SDK](https://ai-sdk.dev/)
+
+#### OpenAI Agents JS SDK
+
+##### `run_item_stream_event`
+
+- [x] `message_output_item`
+  - [x] `output_text`
+  - [ ] `audio`
+  - [ ] `refusal`
+  - [ ] `image`
+- [x] `tool_call_item`
+  - [x] `function_call`
+  - [x] `hosted_tool_call`
+  - [ ] `computer_call`
+- [x] `tool_call_output_item`
+  - [x] `function_call_result`
+  - [ ] `computer_call_result`
+- [x] Sessions with [@stackone/openai-agents-js-sessions](https://www.npmjs.com/package/@stackone/openai-agents-js-sessions)
+
+## 📦 Installation
 
 ```bash
 npm install a2anet @openai/agents @a2a-js/sdk zod@3
@@ -25,39 +60,90 @@ yarn add a2anet @openai/agents @a2a-js/sdk zod@3
 pnpm add a2anet @openai/agents @a2a-js/sdk zod@3
 ```
 
-## Quick Start
+## ⚡ Quick Start
 
 ```typescript
-import { Agent } from "@openai/agents";
-import { OpenAIAgentExecutor } from "a2anet";
+import express from "express";
+import { Agent, tool } from "@openai/agents";
+import { z } from "zod";
+import { OpenAIAgentExecutor, StructuredResponseSchema } from "a2anet";
+import type { AgentCard } from "@a2a-js/sdk";
+import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
+import { A2AExpressApp } from "@a2a-js/sdk/server/express";
+
+// Define a tool
+const getWeather = tool({
+  name: "get_weather",
+  description: "Get the current weather for a city",
+  parameters: z.object({
+    city: z.string(),
+  }),
+  async execute({ city }) {
+    // In a real app, call a weather API
+    return `The weather in ${city} is sunny and 72°F`;
+  },
+});
 
 // 1. Create your main agent using OpenAI Agents SDK
-const agent = new Agent({
-  name: "Customer Support Agent",
-  instructions:
-    "You are a helpful customer support agent. Answer questions and help users solve problems.",
-  model: "gpt-4o",
+const weatherAgent = new Agent({
+  name: "Weather Assistant",
+  instructions: `You are a helpful weather assistant.
+    When users ask about weather, use the get_weather tool.
+    Provide clear and friendly responses.`,
+  tools: [getWeather],
+  model: "gpt-4.1",
 });
 
 // 2. Create a task agent to determine task state and extract artifacts
 const taskAgent = new Agent({
   name: "Task Analyzer",
-  instructions: `Analyze the conversation and determine:
-    - The current state of the task (completed, input-required, failed, etc.)
-    - Extract any artifacts (results) if the task is completed
-    
-    When the user's request has been fully addressed, mark the task as completed.`,
+  instructions: `Review the conversation and determine the task state.
+
+    Mark as 'completed' when:
+    - The user's weather question has been answered with specific information
+    - Extract the weather information as an artifact
+
+    Mark as 'input-required' when:
+    - The user hasn't specified which city they want weather for
+    - More clarification is needed
+
+    Mark as 'failed' if the weather lookup failed or returned an error.`,
   outputType: StructuredResponseSchema,
+  model: "gpt-4.1",
 });
 
 // 3. Create the A2A executor
-const executor = new OpenAIAgentExecutor(agent, taskAgent);
+const executor = new OpenAIAgentExecutor(weatherAgent, taskAgent);
 
-// 4. Use the executor in your A2A server
-// (See A2A SDK documentation for full server setup)
+// 4. Define your agent's identity card
+const agentCard: AgentCard = {
+  name: "Weather Assistant",
+  description: "A helpful weather assistant that provides weather information for cities.",
+  protocolVersion: "0.3.0",
+  version: "0.1.0",
+  url: "http://localhost:4000/",
+  skills: [
+    {
+      id: "weather",
+      name: "Weather Information",
+      description: "Get current weather for a city",
+      tags: ["weather", "information"],
+    },
+  ],
+};
+
+// 5. Set up and run the A2A server
+const requestHandler = new DefaultRequestHandler(agentCard, new InMemoryTaskStore(), executor);
+
+const appBuilder = new A2AExpressApp(requestHandler);
+const expressApp = appBuilder.setupRoutes(express());
+
+expressApp.listen(4000, () => {
+  console.log("🚀 Server started on http://localhost:4000");
+});
 ```
 
-## Core Concepts
+## 🧩 Core Concepts
 
 ### Agent Executor
 
@@ -120,7 +206,7 @@ When a task is `completed`, the task agent must provide artifacts - the final ou
 }
 ```
 
-## Session Management
+## 💾 Session Management
 
 The executor supports conversation history through session providers. This uses [`@stackone/openai-agents-js-sessions`](https://github.com/StackOneHQ/openai-agents-js-sessions), which is based on the [OpenAI Agents Python SDK Sessions](https://openai.github.io/openai-agents-python/sessions/).
 
@@ -158,203 +244,13 @@ const sessionProvider = (sessionId: string) => {
 };
 ```
 
-## Complete Example
+## 📄 License
 
-Here's a full example with tools, sessions, and proper task detection:
+`a2anet` is distributed under the terms of the [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) license.
 
-```typescript
-import { Agent, tool } from "@openai/agents";
-import { z } from "zod";
-import { OpenAIAgentExecutor, StructuredResponseSchema } from "a2anet";
-import { InMemorySession } from "@stackone/openai-agents-js-sessions";
+## 🤝 Join the A2A Net Community
 
-// Define a tool
-const getWeather = tool({
-  name: "get_weather",
-  description: "Get the current weather for a city",
-  parameters: z.object({
-    city: z.string(),
-  }),
-  async execute({ city }) {
-    // In a real app, call a weather API
-    return `The weather in ${city} is sunny and 72°F`;
-  },
-});
+A2A Net is a site to find and share AI agents and open-source community. Join to share your A2A agents, ask questions, stay up-to-date with the latest A2A news, be the first to hear about open-source releases, tutorials, and more!
 
-// Main agent with tools
-const weatherAgent = new Agent({
-  name: "Weather Assistant",
-  instructions: `You are a helpful weather assistant. 
-    When users ask about weather, use the get_weather tool.
-    Provide clear and friendly responses.`,
-  tools: [getWeather],
-  model: "gpt-4o",
-});
-
-// Task agent for A2A protocol
-const taskAgent = new Agent({
-  name: "Task Analyzer",
-  instructions: `Review the conversation and determine the task state.
-    
-    Mark as 'completed' when:
-    - The user's weather question has been answered with specific information
-    - Extract the weather information as an artifact
-    
-    Mark as 'input-required' when:
-    - The user hasn't specified which city they want weather for
-    - More clarification is needed
-    
-    Mark as 'failed' if the weather lookup failed or returned an error.`,
-  outputType: StructuredResponseSchema,
-  model: "gpt-4o",
-});
-
-// Session provider
-const sessionProvider = (sessionId: string) => new InMemorySession();
-
-// Create executor
-const executor = new OpenAIAgentExecutor(weatherAgent, taskAgent, sessionProvider);
-
-// Use in your A2A server
-export default executor;
-```
-
-## Advanced Features
-
-### Tool Calls and Streaming
-
-The executor automatically handles tool calls and streams all events:
-
-- **Message Output Events** - Agent text responses
-- **Tool Call Events** - When the agent invokes a tool
-- **Tool Call Output Events** - Results from tool execution
-- **Task Status Updates** - Task state changes
-- **Task Artifact Updates** - Final results when task completes
-
-### Multiple Agents with Handoffs
-
-You can use the full power of OpenAI Agents SDK, including handoffs between agents:
-
-```typescript
-const bookingAgent = new Agent({
-  name: "Booking Agent",
-  instructions: "Help users with booking requests.",
-});
-
-const refundAgent = new Agent({
-  name: "Refund Agent",
-  instructions: "Process refund requests.",
-});
-
-const triageAgent = new Agent({
-  name: "Triage Agent",
-  instructions: `Route users to the right agent.
-    For booking questions, hand off to Booking Agent.
-    For refund questions, hand off to Refund Agent.`,
-  handoffs: [bookingAgent, refundAgent],
-});
-
-// Use triageAgent as your main agent in the executor
-const executor = new OpenAIAgentExecutor(triageAgent, taskAgent);
-```
-
-### Custom Task Agent Instructions
-
-The task agent is crucial for A2A protocol compliance. Customize its instructions based on your use case:
-
-```typescript
-const taskAgent = new Agent({
-  name: "Task Analyzer",
-  instructions: `Analyze the conversation and determine task state:
-
-    COMPLETED: When the booking is confirmed and the user has received:
-    - Confirmation number
-    - Date and time
-    - Location details
-    Extract these as artifacts in JSON format.
-
-    INPUT_REQUIRED: When we still need:
-    - Preferred date/time
-    - Number of people
-    - Special requests
-
-    FAILED: When:
-    - Requested time slot is unavailable
-    - System error occurred
-    - User's request cannot be fulfilled
-
-    REJECTED: When:
-    - User is trying to book in the past
-    - Request violates our policies`,
-  outputType: StructuredResponseSchema,
-});
-```
-
-## API Reference
-
-### `OpenAIAgentExecutor`
-
-The main class that implements the A2A `AgentExecutor` interface.
-
-#### Constructor
-
-```typescript
-constructor(
-  agent: Agent,
-  taskAgent: Agent<unknown, typeof StructuredResponseSchema>,
-  sessionProvider?: (sessionId: string) => Session
-)
-```
-
-**Parameters:**
-
-- `agent` - The main OpenAI Agent that handles user interactions
-- `taskAgent` - An agent configured with `StructuredResponseSchema` as output type to analyze task state
-- `sessionProvider` (optional) - Function that returns a Session instance for a given session ID
-
-#### Methods
-
-- `execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void>`
-  - Executes the agent for an incoming A2A request
-  - Handles streaming, tool calls, and session management automatically
-
-- `cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void>`
-  - Handles task cancellation requests (implementation pending)
-
-### Type Exports
-
-```typescript
-import {
-  StructuredResponseSchema,
-  StructuredResponse,
-  StructuredResponseArtifact,
-  TaskStateSchema,
-} from "a2anet";
-```
-
-## Requirements
-
-- Node.js >= 18.0.0
-- OpenAI API key (set `OPENAI_API_KEY` environment variable)
-
-## Related Projects
-
-- [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) - The underlying agent framework
-- [@a2a-js/sdk](https://github.com/a2aproject/a2a-js) - The A2A protocol implementation for JavaScript
-- [@stackone/openai-agents-js-sessions](https://github.com/StackOneHQ/openai-agents-js-sessions) - Session management (based on [OpenAI Agents Python SDK Sessions](https://openai.github.io/openai-agents-python/sessions/))
-
-## License
-
-Apache-2.0
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-For issues and questions:
-
-- [GitHub Issues](https://github.com/a2anet/a2anet-js/issues)
-- [A2A Protocol Documentation](https://www.a2a.app/)
-- [OpenAI Agents SDK Documentation](https://openai.github.io/openai-agents-js/)
+- 🌍 Site: https://a2anet.com/
+- 🤖 Discord: https://discord.gg/674NGXpAjU
