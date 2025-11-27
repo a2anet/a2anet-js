@@ -45,6 +45,13 @@ Test your agent with the [Agent2Agent (A2A) UI](https://github.com/a2anet/a2a-ui
 - [x] `tool_call_output_item`
   - [x] `function_call_result`
   - [ ] `computer_call_result`
+
+##### Other
+
+- [x] MCP (Model Context Protocol) servers
+  - [x] Hosted MCP tools
+  - [x] Streamable HTTP MCP servers
+  - [x] Stdio MCP servers
 - [x] Sessions with [@stackone/openai-agents-js-sessions](https://www.npmjs.com/package/@stackone/openai-agents-js-sessions)
 
 ## 📦 Installation
@@ -112,10 +119,7 @@ const taskAgent = new Agent({
   model: "gpt-4.1",
 });
 
-// 3. Create the A2A executor
-const executor = new OpenAIAgentExecutor(weatherAgent, taskAgent);
-
-// 4. Define your agent's identity card
+// 3. Define your agent's identity card
 const agentCard: AgentCard = {
   name: "Weather Assistant",
   description: "A helpful weather assistant that provides weather information for cities.",
@@ -131,6 +135,9 @@ const agentCard: AgentCard = {
     },
   ],
 };
+
+// 4. Create the A2A executor
+const executor = new OpenAIAgentExecutor(weatherAgent, taskAgent, agentCard);
 
 // 5. Set up and run the A2A server
 const requestHandler = new DefaultRequestHandler(agentCard, new InMemoryTaskStore(), executor);
@@ -206,11 +213,13 @@ When a task is `completed`, the task agent must provide artifacts - the final ou
 }
 ```
 
-## 💾 Session Management
+## 🤖 OpenAI Agents JS SDK
+
+### Session Management
 
 The executor supports conversation history through session providers. This uses [`@stackone/openai-agents-js-sessions`](https://github.com/StackOneHQ/openai-agents-js-sessions), which is based on the [OpenAI Agents Python SDK Sessions](https://openai.github.io/openai-agents-python/sessions/).
 
-### Using Sessions
+#### Using Sessions
 
 ```typescript
 import { InMemorySession } from "@stackone/openai-agents-js-sessions";
@@ -218,31 +227,138 @@ import { OpenAIAgentExecutor } from "a2anet";
 
 // Create a session provider function
 const sessionProvider = (sessionId: string) => {
-  return new InMemorySession();
+  return new InMemorySession(sessionId);
 };
 
 // Pass it to the executor
-const executor = new OpenAIAgentExecutor(agent, taskAgent, sessionProvider);
+const executor = new OpenAIAgentExecutor(agent, taskAgent, agentCard, {
+  sessionProvider,
+});
 ```
 
-### Available Session Backends
+#### Available Session Backends
 
 The `@stackone/openai-agents-js-sessions` package provides multiple storage backends:
 
-- **InMemorySession** - For testing and development
-- **SQLiteSession** - For persistent local storage
-- **SequelizeSession** - For production databases (PostgreSQL, MySQL, etc.)
+##### InMemorySession
+
+In-memory storage (data lost when process ends). Ideal for development and testing.
+
+```typescript
+import { InMemorySession } from "@stackone/openai-agents-js-sessions";
+
+const sessionProvider = (sessionId: string) => {
+  return new InMemorySession(sessionId);
+};
+```
+
+##### SQLiteSession
+
+SQLite-backed storage for persistent conversation history.
 
 ```typescript
 import { SQLiteSession } from "@stackone/openai-agents-js-sessions";
 
 const sessionProvider = (sessionId: string) => {
-  return new SQLiteSession({
-    database: "./sessions.db",
-    sessionId,
+  return new SQLiteSession(sessionId, "conversations.db");
+};
+```
+
+##### SequelizeSession
+
+Sequelize-powered storage supporting PostgreSQL, MySQL, SQLite, and more.
+
+```typescript
+import { SequelizeSession } from "@stackone/openai-agents-js-sessions";
+import { Sequelize } from "sequelize";
+
+// From URL (PostgreSQL)
+const sessionProvider = async (sessionId: string) => {
+  return await SequelizeSession.fromUrl(sessionId, "postgres://user:pass@localhost:5432/mydb", {
+    createTables: true,
   });
 };
 ```
+
+### MCP Server Support
+
+The executor supports [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers, allowing your agents to access external tools and data sources. Three types of MCP servers are supported:
+
+#### Hosted MCP Tools
+
+Hosted MCP tools are remote servers that the OpenAI Responses API invokes directly. Configure them on your Agent's `tools` array - no lifecycle management needed:
+
+```typescript
+import { Agent, hostedMcpTool } from "@openai/agents";
+import { OpenAIAgentExecutor } from "a2anet";
+
+const agent = new Agent({
+  name: "Documentation Assistant",
+  instructions: "Use the MCP tools to answer questions about the repository.",
+  tools: [
+    hostedMcpTool({
+      serverLabel: "gitmcp",
+      serverUrl: "https://gitmcp.io/openai/codex",
+    }),
+  ],
+});
+
+const executor = new OpenAIAgentExecutor(agent, taskAgent, agentCard);
+```
+
+#### Streamable HTTP MCP Servers
+
+For Streamable HTTP MCP servers (local or remote), pass them to the executor's `mcpServers` option. The executor automatically handles `connect()` and `close()`:
+
+```typescript
+import { Agent, MCPServerStreamableHttp } from "@openai/agents";
+import { OpenAIAgentExecutor } from "a2anet";
+
+const mcpServer = new MCPServerStreamableHttp({
+  url: "https://example.com/mcp",
+  name: "My MCP Server",
+});
+
+const agent = new Agent({
+  name: "MCP Assistant",
+  instructions: "Use the tools to respond to user requests.",
+  mcpServers: [mcpServer],
+});
+
+const executor = new OpenAIAgentExecutor(agent, taskAgent, agentCard, {
+  mcpServers: [mcpServer],
+});
+```
+
+#### Stdio MCP Servers
+
+For local MCP servers that use standard I/O, use `MCPServerStdio`:
+
+```typescript
+import { Agent, MCPServerStdio } from "@openai/agents";
+import { OpenAIAgentExecutor } from "a2anet";
+
+const mcpServer = new MCPServerStdio({
+  name: "Filesystem MCP Server",
+  fullCommand: "npx -y @modelcontextprotocol/server-filesystem /path/to/files",
+});
+
+const agent = new Agent({
+  name: "File Assistant",
+  instructions: "Use the tools to read files and answer questions.",
+  mcpServers: [mcpServer],
+});
+
+const executor = new OpenAIAgentExecutor(agent, taskAgent, agentCard, {
+  mcpServers: [mcpServer],
+});
+```
+
+For more details on MCP, see the [OpenAI Agents MCP documentation](https://openai.github.io/openai-agents-js/mcp/).
+
+### Tracing
+
+The executor wraps all agent runs in an OpenAI Agents SDK trace context, which is required when using MCP servers. This enables tracing and debugging through the [OpenAI Agents Tracing](https://openai.github.io/openai-agents-js/guides/tracing/) features.
 
 ## 📄 License
 

@@ -1,4 +1,5 @@
 import type {
+  AgentCard,
   Message,
   Part,
   Task,
@@ -16,35 +17,34 @@ import {
   type UserMessageItem,
   run,
   user,
+  withTrace,
 } from "@openai/agents";
 import type { Session } from "@stackone/openai-agents-js-sessions";
 import { v4 as uuidv4 } from "uuid";
 
-import type { StructuredResponse } from "../types/openai.js";
+import type { MCPServerStdio, MCPServerStreamableHttp } from "@openai/agents";
+import type { OpenAIAgentExecutorOptions, StructuredResponse } from "../types/openai.js";
 import { StructuredResponseSchema } from "../types/openai.js";
-
-export type ActionMetaItemInput = {
-  name: string;
-  type: string;
-  required: boolean;
-  description: string;
-  in: string;
-};
 
 export class OpenAIAgentExecutor implements AgentExecutor {
   private readonly agent: Agent;
   private readonly taskAgent: Agent<unknown, typeof StructuredResponseSchema>;
+  private readonly agentCard: AgentCard;
   private readonly sessions: Map<string, Session> = new Map();
   private readonly sessionProvider?: (sessionId: string) => Session;
+  private readonly mcpServers?: (MCPServerStdio | MCPServerStreamableHttp)[];
 
   constructor(
     agent: Agent,
     taskAgent: Agent<unknown, typeof StructuredResponseSchema>,
-    sessionProvider?: (sessionId: string) => Session,
+    agentCard: AgentCard,
+    options?: OpenAIAgentExecutorOptions,
   ) {
     this.agent = agent;
     this.taskAgent = taskAgent;
-    this.sessionProvider = sessionProvider;
+    this.agentCard = agentCard;
+    this.sessionProvider = options?.sessionProvider;
+    this.mcpServers = options?.mcpServers;
   }
 
   /**
@@ -64,6 +64,34 @@ export class OpenAIAgentExecutor implements AgentExecutor {
     return session;
   }
 
+  /**
+   * Connect all managed MCP servers.
+   */
+  private async connectMCPServers(): Promise<void> {
+    if (!this.mcpServers) {
+      return;
+    }
+
+    await Promise.all(this.mcpServers.map((server) => server.connect()));
+  }
+
+  /**
+   * Close all managed MCP servers.
+   */
+  private async closeMCPServers(): Promise<void> {
+    if (!this.mcpServers) {
+      return;
+    }
+
+    await Promise.all(
+      this.mcpServers.map((server) =>
+        server.close().catch((error) => {
+          console.error("Failed to close MCP server:", error);
+        }),
+      ),
+    );
+  }
+
   async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
     const { contextId, taskId, userMessage, task } = requestContext as {
       contextId: string;
@@ -72,7 +100,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
       task?: Task;
     };
 
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("Message", JSON.stringify(userMessage, null, 4));
 
     if (!task) {
@@ -83,7 +110,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
         status: { state: "submitted", timestamp: new Date().toISOString() },
         history: [userMessage],
       };
-      // biome-ignore lint/suspicious/noConsole: We want to log the event.
       console.log("Task", JSON.stringify(taskSubmitted, null, 4));
       eventBus.publish(taskSubmitted);
     }
@@ -95,69 +121,84 @@ export class OpenAIAgentExecutor implements AgentExecutor {
       status: { state: "working", timestamp: new Date().toISOString() },
       final: false,
     };
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("TaskStatusUpdateEvent", JSON.stringify(taskStatusUpdateEvent, null, 4));
     eventBus.publish(taskStatusUpdateEvent);
 
-    // Get session for this context (if session provider is configured)
-    const session = this.getSession(contextId);
+    // Agent runs with MCP servers need to be wrapped in a trace context for the error "No
+    // existing trace found".
+    await withTrace(this.agentCard.name, async () => {
+      try {
+        // Get session for this context (if session provider is configured)
+        const session = this.getSession(contextId);
 
-    // Build input from session history
-    let input: AgentInputItem[];
+        // Build input from session history
+        let input: AgentInputItem[];
 
-    const userMessages: UserMessageItem[] = userMessage.parts
-      .map((p) => (p.kind === "text" ? user(p.text) : null))
-      .filter((p) => p !== null);
+        const userMessages: UserMessageItem[] = userMessage.parts
+          .map((p) => (p.kind === "text" ? user(p.text) : null))
+          .filter((p) => p !== null);
 
-    if (session) {
-      // Load existing history from session and add current user message
-      const sessionHistory = await session.getItems();
-      input = [...sessionHistory, ...userMessages];
-    } else {
-      // No session - just the user message
-      input = userMessages;
-    }
+        if (session) {
+          // Load existing history from session and add current user message
+          const sessionHistory = await session.getItems();
+          input = [...sessionHistory, ...userMessages];
+        } else {
+          // No session - just the user message
+          input = userMessages;
+        }
 
-    // Run the agent with conversation history
-    const result = await run(this.agent, input, {
-      stream: true,
-    });
+        if (this.mcpServers) {
+          // Connect MCP servers before execution
+          await this.connectMCPServers();
+        }
 
-    for await (const event of result) {
-      if (event.type === "run_item_stream_event") {
-        if (event.item.type === "message_output_item") {
-          this.handleMessageOutputItem(event.item, taskId, contextId, eventBus);
-        } else if (event.item.type === "tool_call_item") {
-          this.handleToolCallItem(event.item, taskId, contextId, eventBus);
-        } else if (event.item.type === "tool_call_output_item") {
-          this.handleToolCallOutputItem(event.item, taskId, contextId, eventBus);
+        // Run the agent with conversation history
+        const result = await run(this.agent, input, {
+          stream: true,
+        });
+
+        for await (const event of result) {
+          if (event.type === "run_item_stream_event") {
+            if (event.item.type === "message_output_item") {
+              this.handleMessageOutputItem(event.item, taskId, contextId, eventBus);
+            } else if (event.item.type === "tool_call_item") {
+              this.handleToolCallItem(event.item, taskId, contextId, eventBus);
+            } else if (event.item.type === "tool_call_output_item") {
+              this.handleToolCallOutputItem(event.item, taskId, contextId, eventBus);
+            }
+          }
+        }
+
+        // Wait for agent to complete
+        await result.completed;
+
+        // Save new items to session if provided
+        if (session) {
+          // Get new items generated during this run
+          // result.history contains all items including what we passed in
+          // New items are everything after the initial input
+          const newItems = result.history.slice(input.length);
+
+          if (newItems.length > 0) {
+            // Add the user message we just sent (not included in newItems)
+            await session.addItems([...userMessages, ...newItems]);
+          } else {
+            // Even if no new items from agent, still save the user message
+            await session.addItems(userMessages);
+          }
+        }
+
+        // Extract structured A2A response by analyzing the conversation
+        await this.handleStructuredResponse(result.history, taskId, contextId, eventBus);
+
+        eventBus.finished();
+      } finally {
+        if (this.mcpServers) {
+          // Always close MCP servers, even if execution fails
+          await this.closeMCPServers();
         }
       }
-    }
-
-    // Wait for agent to complete
-    await result.completed;
-
-    // Save new items to session if provided
-    if (session) {
-      // Get new items generated during this run
-      // result.history contains all items including what we passed in
-      // New items are everything after the initial input
-      const newItems = result.history.slice(input.length);
-
-      if (newItems.length > 0) {
-        // Add the user message we just sent (not included in newItems)
-        await session.addItems([...userMessages, ...newItems]);
-      } else {
-        // Even if no new items from agent, still save the user message
-        await session.addItems(userMessages);
-      }
-    }
-
-    // Extract structured A2A response by analyzing the conversation
-    await this.handleStructuredResponse(result.history, taskId, contextId, eventBus);
-
-    eventBus.finished();
+    });
   }
 
   /**
@@ -170,7 +211,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
     contextId: string,
     eventBus: ExecutionEventBus,
   ): void {
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("message_output_item", JSON.stringify(item, null, 4));
 
     const messageId = item.rawItem.id || uuidv4();
@@ -214,7 +254,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
       final: false,
     };
 
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("TaskStatusUpdateEvent", JSON.stringify(messageOutputEvent, null, 4));
     eventBus.publish(messageOutputEvent);
   }
@@ -229,7 +268,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
     contextId: string,
     eventBus: ExecutionEventBus,
   ): void {
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("tool_call_item", JSON.stringify(item, null, 4));
 
     const rawItem = item.rawItem;
@@ -303,7 +341,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
       final: false,
     };
 
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("TaskStatusUpdateEvent", JSON.stringify(toolCallItemEvent, null, 4));
     eventBus.publish(toolCallItemEvent);
   }
@@ -318,7 +355,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
     contextId: string,
     eventBus: ExecutionEventBus,
   ): void {
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("tool_call_output_item", JSON.stringify(item, null, 4));
 
     const messageId = item.rawItem.id || uuidv4();
@@ -384,7 +420,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
       final: false,
     };
 
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("TaskStatusUpdateEvent", JSON.stringify(toolCallOutputItemEvent, null, 4));
     eventBus.publish(toolCallOutputItemEvent);
   }
@@ -414,7 +449,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
         final: true,
       };
 
-      // biome-ignore lint/suspicious/noConsole: We want to log the event.
       console.log("TaskStatusUpdateEvent", JSON.stringify(structuredResponseUnknownEvent, null, 4));
 
       eventBus.publish(structuredResponseUnknownEvent);
@@ -444,7 +478,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
       final: true,
     };
 
-    // biome-ignore lint/suspicious/noConsole: We want to log the event.
     console.log("TaskStatusUpdateEvent", JSON.stringify(structuredResponseFinalEvent, null, 4));
     eventBus.publish(structuredResponseFinalEvent);
   }
@@ -507,7 +540,6 @@ export class OpenAIAgentExecutor implements AgentExecutor {
         },
       };
 
-      // biome-ignore lint/suspicious/noConsole: We want to log the event.
       console.log("TaskArtifactUpdateEvent", JSON.stringify(taskArtifactUpdateEvent, null, 4));
       eventBus.publish(taskArtifactUpdateEvent);
     }
