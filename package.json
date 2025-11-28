@@ -1,6 +1,6 @@
 {
   "name": "a2anet",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "A JavaScript package that makes implementing the A2A protocol easy",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
