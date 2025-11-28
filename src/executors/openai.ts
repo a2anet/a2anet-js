@@ -31,7 +31,7 @@ export class OpenAIAgentExecutor implements AgentExecutor {
   private readonly taskAgent: Agent<unknown, typeof StructuredResponseSchema>;
   private readonly agentCard: AgentCard;
   private readonly sessions: Map<string, Session> = new Map();
-  private readonly sessionProvider?: (sessionId: string) => Session;
+  private readonly sessionProvider?: (sessionId: string) => Session | Promise<Session>;
   private readonly mcpServers?: (MCPServerStdio | MCPServerStreamableHttp)[];
 
   constructor(
@@ -50,14 +50,15 @@ export class OpenAIAgentExecutor implements AgentExecutor {
   /**
    * Get or create a session for the given context ID.
    */
-  private getSession(contextId: string): Session | undefined {
+  private async getSession(contextId: string): Promise<Session | undefined> {
     if (!this.sessionProvider) {
       return undefined;
     }
 
     let session = this.sessions.get(contextId);
     if (!session) {
-      session = this.sessionProvider(contextId);
+      const sessionOrPromise = this.sessionProvider(contextId);
+      session = sessionOrPromise instanceof Promise ? await sessionOrPromise : sessionOrPromise;
       this.sessions.set(contextId, session);
     }
 
@@ -129,7 +130,7 @@ export class OpenAIAgentExecutor implements AgentExecutor {
     await withTrace(this.agentCard.name, async () => {
       try {
         // Get session for this context (if session provider is configured)
-        const session = this.getSession(contextId);
+        const session = await this.getSession(contextId);
 
         // Build input from session history
         let input: AgentInputItem[];

@@ -96,7 +96,7 @@ export interface OpenAIAgentExecutorOptions {
   /**
    * Session provider for conversation history.
    */
-  sessionProvider?: (sessionId: string) => Session;
+  sessionProvider?: (sessionId: string) => Session | Promise<Session>;
 
   /**
    * MCP servers to be managed by the executor.
